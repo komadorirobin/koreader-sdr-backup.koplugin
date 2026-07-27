@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.2 - 2026-07-27
+
+- Fix the connection result handler accidentally shadowing KOReader's gettext function.
+- Remove the same identifier-shadowing risk from backup and restore loops.
+- Add a regression test that prevents gettext from being shadowed again.
+
 ## 1.1.1 - 2026-07-27
 
 - Keep KOReader responsive by running storage scans and network operations in cancellable subprocesses.

@@ -118,7 +118,7 @@ local function parseRelease(body)
         return nil, "invalid GitHub release response"
     end
     local zip_url, checksum_url
-    for _, asset in ipairs(data.assets or {}) do
+    for asset_index, asset in ipairs(data.assets or {}) do
         if asset.name == ZIP_ASSET and validAssetUrl(asset.browser_download_url) then
             zip_url = asset.browser_download_url
         elseif asset.name == CHECKSUM_ASSET and validAssetUrl(asset.browser_download_url) then

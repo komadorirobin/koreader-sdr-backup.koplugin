@@ -24,7 +24,7 @@ local ACTIVE_MANIFEST_FILE = KOREADER_DIR .. "/sdrbackup_active_manifest.json"
 local PENDING_RESTORE_FILE = KOREADER_DIR .. "/sdrbackup_pending_restore.json"
 local RESTORE_STAGE_DIR = KOREADER_DIR .. "/.sdrbackup-restore"
 local PROGRESS_INTERVAL = 10
-local VERSION = "1.1.1"
+local VERSION = "1.1.2"
 
 local function trim(value)
     return tostring(value or ""):match("^%s*(.-)%s*$")
@@ -281,7 +281,7 @@ function SDRBackup:uploadFile(backup_id, entry)
         return chunk
     end
     local path = "/api/v1/backups/" .. urlEncode(backup_id) .. "/file?path=" .. urlEncode(entry.backup_path)
-    local code, _, request_err = self:httpRequest("PUT", path, source, entry.size)
+    local code, response_body, request_err = self:httpRequest("PUT", path, source, entry.size)
     if not closed then file:close() end
     if request_err then return nil, request_err end
     if code ~= 200 then return nil, "HTTP " .. tostring(code) end
@@ -296,7 +296,7 @@ function SDRBackup:downloadFile(backup_id, backup_path, target)
     if not file then return nil, open_err end
     local ltn12 = require("ltn12")
     local path = "/api/v1/backups/" .. urlEncode(backup_id) .. "/file?path=" .. urlEncode(backup_path)
-    local code, _, request_err = self:httpRequest("GET", path, nil, 0, ltn12.sink.file(file))
+    local code, response_body, request_err = self:httpRequest("GET", path, nil, 0, ltn12.sink.file(file))
     if request_err or code ~= 200 then
         pcall(os.remove, temporary)
         return nil, request_err or ("HTTP " .. tostring(code))
@@ -435,7 +435,7 @@ function SDRBackup:createManifest()
         scan_warnings = {},
     }
     local internal
-    for _, root in ipairs(roots) do
+    for root_index, root in ipairs(roots) do
         manifest.roots[#manifest.roots + 1] = {
             id = root.id, kind = root.kind, label = root.label, original_path = root.path,
         }
@@ -465,7 +465,7 @@ end
 function SDRBackup:performUpload(manifest, backup_id, uploaded)
     uploaded = uploaded or {}
     local total_bytes, sent_bytes, skipped = 0, 0, 0
-    for _, entry in ipairs(manifest.files) do total_bytes = total_bytes + (tonumber(entry.size) or 0) end
+    for entry_index, entry in ipairs(manifest.files) do total_bytes = total_bytes + (tonumber(entry.size) or 0) end
     for index, entry in ipairs(manifest.files) do
         if uploaded[entry.backup_path] == tonumber(entry.size) then
             skipped = skipped + 1
@@ -569,7 +569,7 @@ function SDRBackup:resumeBackup()
     if not completed then self:closeProgress(); return self:showMessage(_("Backup cancelled."), 4) end
     if err or code ~= 200 then self:closeProgress(); return self:showMessage(_("Could not resume: ") .. tostring(err or ("HTTP " .. tostring(code))), 7) end
     local uploaded = {}
-    for _, entry in ipairs(response.files or {}) do uploaded[entry.backup_path] = tonumber(entry.size) end
+    for entry_index, entry in ipairs(response.files or {}) do uploaded[entry.backup_path] = tonumber(entry.size) end
     local result, upload_err = self:performUpload(manifest, self.active_backup_id, uploaded)
     self:closeProgress()
     if not result then return self:showMessage(_("Backup remains paused.\n") .. tostring(upload_err), 10) end
@@ -579,17 +579,17 @@ end
 function SDRBackup:rootMap(manifest)
     local current = self:discoverRoots()
     local internal, removable = nil, {}
-    for _, root in ipairs(current) do
+    for root_index, root in ipairs(current) do
         if root.kind == "internal" then internal = root.path else removable[#removable + 1] = root.path end
     end
     local mapping = {}
-    for _, old_root in ipairs(manifest.roots or {}) do
+    for old_root_index, old_root in ipairs(manifest.roots or {}) do
         if old_root.kind == "internal" then
             mapping[old_root.id] = internal
         elseif #removable == 1 then
             mapping[old_root.id] = removable[1]
         else
-            for _, root in ipairs(current) do
+            for root_index, root in ipairs(current) do
                 if root.kind == "removable" and root.label == old_root.label then mapping[old_root.id] = root.path end
             end
         end
@@ -607,7 +607,7 @@ function SDRBackup:restoreBackupNow(backup_id)
     local mapping, map_err = self:rootMap(manifest)
     if not mapping then self:closeProgress(); return self:showMessage(map_err, 10) end
 
-    for _, directory in ipairs(manifest.sdr_directories or {}) do
+    for directory_index, directory in ipairs(manifest.sdr_directories or {}) do
         if safeRelative(directory.relative_path) then
             local ok, mkdir_err = mkdirp(joinPath(mapping[directory.root_id], directory.relative_path))
             if not ok then self:closeProgress(); return self:showMessage(_("Could not create folder: ") .. tostring(mkdir_err), 8) end
@@ -667,7 +667,7 @@ function SDRBackup:getRestoreMenu()
         return { { text = _("Could not contact computer: ") .. tostring(err or code), enabled = false } }
     end
     local items = {}
-    for _, backup in ipairs(response.backups or {}) do
+    for backup_index, backup in ipairs(response.backups or {}) do
         local selected = backup
         items[#items + 1] = {
             text = string.format("%s  (%d SDR, %s)", backup.backup_id, backup.sdr_directory_count or 0, formatBytes(backup.total_bytes)),
@@ -680,7 +680,7 @@ end
 
 function SDRBackup:testConnection()
     self:setProgress(_("Testing connection..."))
-    local completed, code, _, err = self:runSubprocess(function()
+    local completed, code, response, err = self:runSubprocess(function()
         return self:jsonRequest("GET", "/api/v1/ping", nil, 3, 5)
     end)
     self:closeProgress()
@@ -739,7 +739,7 @@ function SDRBackup:applyPendingRestore()
     end
     UIManager:scheduleIn(0.5, function()
         local errors = {}
-        for _, entry in ipairs(pending.files) do
+        for entry_index, entry in ipairs(pending.files) do
             local ok, err = copyFile(entry.source, entry.target)
             if not ok then errors[#errors + 1] = tostring(entry.target) .. ": " .. tostring(err) end
         end

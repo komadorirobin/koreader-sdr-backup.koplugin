@@ -24,7 +24,7 @@ local ACTIVE_MANIFEST_FILE = KOREADER_DIR .. "/sdrbackup_active_manifest.json"
 local PENDING_RESTORE_FILE = KOREADER_DIR .. "/sdrbackup_pending_restore.json"
 local RESTORE_STAGE_DIR = KOREADER_DIR .. "/.sdrbackup-restore"
 local PROGRESS_INTERVAL = 10
-local VERSION = "1.1.3"
+local VERSION = "1.1.4"
 
 local function trim(value)
     return tostring(value or ""):match("^%s*(.-)%s*$")

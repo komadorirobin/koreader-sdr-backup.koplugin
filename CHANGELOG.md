@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.4 - 2026-07-27
+
+- Run OTA file download, verification and installation in KOReader's main process.
+- Avoid the Android subprocess hang introduced when the coroutine wrapper was fixed in 1.1.1.
+- Keep direct raw-file downloads, per-file SHA-256 checks and strict network timeouts.
+
 ## 1.1.3 - 2026-07-27
 
 - Download OTA source files directly from the tagged GitHub tree, avoiding release-asset redirects.

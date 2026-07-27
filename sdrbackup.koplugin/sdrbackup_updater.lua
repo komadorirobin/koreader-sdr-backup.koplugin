@@ -201,7 +201,6 @@ end
 local function installUpdate(release)
     local temp_dir = temporaryDir()
     local progress = toast(string.format(_("Downloading SDR Backup %s..."), release.version), 180)
-    local ok_trapper, Trapper = pcall(require, "ui/trapper")
 
     local function doInstall()
         local lfs = require("libs/libkoreader-lfs")
@@ -257,19 +256,12 @@ local function installUpdate(release)
         })
     end
 
-    if ok_trapper and Trapper and Trapper.dismissableRunInSubprocess then
-        Trapper:wrap(function()
-            local completed, result = Trapper:dismissableRunInSubprocess(doInstall, progress)
-            if completed and result then
-                handleResult(result)
-            elseif completed == false then
-                closeWidget(progress)
-                toast(_("Update cancelled."))
-            end
-        end)
-    else
-        UIManager:scheduleIn(0.2, function() handleResult(doInstall()) end)
-    end
+    UIManager:forceRePaint()
+    UIManager:scheduleIn(0.2, function()
+        local ok, result = xpcall(doInstall, debug.traceback)
+        if not ok then result = { success = false, stage = "internal error", err = result } end
+        handleResult(result)
+    end)
 end
 
 local function showRelease(release, current)

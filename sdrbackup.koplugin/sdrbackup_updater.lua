@@ -228,14 +228,16 @@ local function installUpdate(release)
     end
 
     if ok_trapper and Trapper and Trapper.dismissableRunInSubprocess then
-        local completed, result = Trapper:dismissableRunInSubprocess(doInstall, progress, handleResult)
-        if completed and result then
-            UIManager:scheduleIn(0.2, function() handleResult(result) end)
-        elseif completed == false then
-            closeWidget(progress)
-            pcall(os.remove, zip_path); pcall(os.remove, checksum_path)
-            toast(_("Update cancelled."))
-        end
+        Trapper:wrap(function()
+            local completed, result = Trapper:dismissableRunInSubprocess(doInstall, progress)
+            if completed and result then
+                handleResult(result)
+            elseif completed == false then
+                closeWidget(progress)
+                pcall(os.remove, zip_path); pcall(os.remove, checksum_path)
+                toast(_("Update cancelled."))
+            end
+        end)
     else
         UIManager:scheduleIn(0.2, function() handleResult(doInstall()) end)
     end
@@ -275,9 +277,11 @@ function Updater._checkNow()
         showRelease(result, current)
     end
     if ok_trapper and Trapper and Trapper.dismissableRunInSubprocess then
-        local completed, result = Trapper:dismissableRunInSubprocess(check, progress, handleResult)
-        if completed and result then UIManager:scheduleIn(0.2, function() handleResult(result) end)
-        elseif completed == false then closeWidget(progress); toast(_("Update check cancelled.")) end
+        Trapper:wrap(function()
+            local completed, result = Trapper:dismissableRunInSubprocess(check, progress)
+            if completed and result then handleResult(result)
+            elseif completed == false then closeWidget(progress); toast(_("Update check cancelled.")) end
+        end)
     else
         UIManager:scheduleIn(0.2, function() handleResult(check()) end)
     end

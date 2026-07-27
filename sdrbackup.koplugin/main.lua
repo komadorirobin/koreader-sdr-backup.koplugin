@@ -1,6 +1,7 @@
 local ConfirmBox = require("ui/widget/confirmbox")
 local InfoMessage = require("ui/widget/infomessage")
 local InputDialog = require("ui/widget/inputdialog")
+local Trapper = require("ui/trapper")
 local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local dump = require("dump")
@@ -22,8 +23,8 @@ local SETTINGS_FILE = KOREADER_DIR .. "/sdrbackup_settings.lua"
 local ACTIVE_MANIFEST_FILE = KOREADER_DIR .. "/sdrbackup_active_manifest.json"
 local PENDING_RESTORE_FILE = KOREADER_DIR .. "/sdrbackup_pending_restore.json"
 local RESTORE_STAGE_DIR = KOREADER_DIR .. "/.sdrbackup-restore"
-local PROGRESS_INTERVAL = 50
-local VERSION = "1.1.0"
+local PROGRESS_INTERVAL = 10
+local VERSION = "1.1.1"
 
 local function trim(value)
     return tostring(value or ""):match("^%s*(.-)%s*$")
@@ -175,6 +176,10 @@ function SDRBackup:showMessage(text, timeout)
 end
 
 function SDRBackup:setProgress(text)
+    if Trapper:isWrapped() then
+        Trapper:info(text)
+        return
+    end
     if self.progress_widget then UIManager:close(self.progress_widget) end
     self.progress_widget = InfoMessage:new{ text = text }
     UIManager:show(self.progress_widget)
@@ -182,6 +187,10 @@ function SDRBackup:setProgress(text)
 end
 
 function SDRBackup:closeProgress()
+    if Trapper:isWrapped() then
+        Trapper:clear()
+        return
+    end
     if self.progress_widget then
         UIManager:close(self.progress_widget)
         self.progress_widget = nil
@@ -192,12 +201,15 @@ function SDRBackup:baseUrl()
     return trim(self.server_url):gsub("/+$", "")
 end
 
-function SDRBackup:httpRequest(method, path, source, length, sink)
+function SDRBackup:httpRequest(method, path, source, length, sink, block_timeout, total_timeout)
     if self:baseUrl() == "" or self.token == "" then return nil, nil, _("Server address or token is missing") end
     local http = require("socket/http")
     local socketutil_ok, socketutil = pcall(require, "socketutil")
     if socketutil_ok then
-        socketutil:set_timeout(socketutil.LARGE_BLOCK_TIMEOUT, socketutil.LARGE_TOTAL_TIMEOUT)
+        socketutil:set_timeout(
+            block_timeout or socketutil.LARGE_BLOCK_TIMEOUT,
+            total_timeout or socketutil.LARGE_TOTAL_TIMEOUT
+        )
     end
     local chunks = {}
     local request = {
@@ -220,7 +232,7 @@ function SDRBackup:httpRequest(method, path, source, length, sink)
     return tonumber(code), body, nil
 end
 
-function SDRBackup:jsonRequest(method, path, value)
+function SDRBackup:jsonRequest(method, path, value, block_timeout, total_timeout)
     local body = ""
     if value ~= nil then
         local err
@@ -228,11 +240,35 @@ function SDRBackup:jsonRequest(method, path, value)
         if not body then return nil, nil, err end
     end
     local ltn12 = require("ltn12")
-    local code, response, request_err = self:httpRequest(method, path, ltn12.source.string(body), #body)
+    local code, response, request_err = self:httpRequest(
+        method,
+        path,
+        ltn12.source.string(body),
+        #body,
+        nil,
+        block_timeout,
+        total_timeout
+    )
     if request_err then return nil, nil, request_err end
     local decoded = {}
     if response ~= "" then decoded = decodeJson(response) or {} end
     return code, decoded, nil
+end
+
+function SDRBackup:runSubprocess(task)
+    if not Trapper:isWrapped() then return true, task() end
+    return Trapper:dismissableRunInSubprocess(task, false)
+end
+
+function SDRBackup:runTask(task)
+    Trapper:wrap(function()
+        local ok, err = xpcall(task, debug.traceback)
+        if not ok then
+            Trapper:reset()
+            logger.err("[SDRBackup] Task failed:", err)
+            self:showMessage(_("SDR Backup stopped after an internal error:\n") .. tostring(err), 12)
+        end
+    end)
 end
 
 function SDRBackup:uploadFile(backup_id, entry)
@@ -442,13 +478,19 @@ function SDRBackup:performUpload(manifest, backup_id, uploaded)
             if index == 1 or index % PROGRESS_INTERVAL == 0 then
                 self:setProgress(string.format(_("Backing up %d/%d\n%s / %s"), index, #manifest.files, formatBytes(sent_bytes), formatBytes(total_bytes)))
             end
-            local ok, err = self:uploadFile(backup_id, entry)
+            local completed, ok, err = self:runSubprocess(function()
+                return self:uploadFile(backup_id, entry)
+            end)
+            if not completed then return nil, _("Backup cancelled.") end
             if not ok then return nil, string.format("%s: %s", entry.relative_path, tostring(err)) end
             sent_bytes = sent_bytes + (tonumber(entry.size) or 0)
         end
     end
     self:setProgress(_("The computer is verifying the backup..."))
-    local code, result, err = self:jsonRequest("POST", "/api/v1/backups/" .. urlEncode(backup_id) .. "/complete", {})
+    local completed, code, result, err = self:runSubprocess(function()
+        return self:jsonRequest("POST", "/api/v1/backups/" .. urlEncode(backup_id) .. "/complete", {})
+    end)
+    if not completed then return nil, _("Backup cancelled.") end
     if err then return nil, err end
     if code ~= 200 or result.state ~= "complete" then
         return nil, string.format(_("Verification failed: %d files are missing"), #(result.missing or {}))
@@ -466,7 +508,11 @@ end
 
 function SDRBackup:startNewBackupNow()
     self:setProgress(_("Scanning all storage for .sdr folders..."))
-    local manifest = self:createManifest()
+    local completed, manifest = self:runSubprocess(function() return self:createManifest() end)
+    if not completed then
+        self:closeProgress()
+        return self:showMessage(_("Backup cancelled."), 4)
+    end
     if #manifest.scan_warnings > 0 then
         self:closeProgress()
         local shown = {}
@@ -480,7 +526,13 @@ function SDRBackup:startNewBackupNow()
     local saved, save_err = self:saveActiveManifest(manifest)
     if not saved then self:closeProgress(); return self:showMessage(_("Could not save manifest: ") .. tostring(save_err), 7) end
     self:setProgress(string.format(_("Found %d .sdr folders and %d files. Contacting the computer..."), #manifest.sdr_directories, #manifest.files))
-    local code, response, err = self:jsonRequest("POST", "/api/v1/backups", manifest)
+    completed, code, response, err = self:runSubprocess(function()
+        return self:jsonRequest("POST", "/api/v1/backups", manifest)
+    end)
+    if not completed then
+        self:closeProgress()
+        return self:showMessage(_("Backup cancelled."), 4)
+    end
     if err or code ~= 201 or not response.backup_id then
         self:closeProgress()
         return self:showMessage(_("Could not start backup: ") .. tostring(err or ("HTTP " .. tostring(code))), 8)
@@ -499,7 +551,9 @@ function SDRBackup:startNewBackup()
         ok_text = _("Back up"),
         cancel_text = _("Cancel"),
         ok_callback = function()
-            UIManager:scheduleIn(0.1, function() self:startNewBackupNow() end)
+            UIManager:scheduleIn(0.1, function()
+                self:runTask(function() self:startNewBackupNow() end)
+            end)
         end,
     })
 end
@@ -509,7 +563,10 @@ function SDRBackup:resumeBackup()
     local manifest, manifest_err = self:loadActiveManifest()
     if not manifest then return self:showMessage(_("The local resume manifest is missing: ") .. tostring(manifest_err), 7) end
     self:setProgress(_("Checking what has already reached the computer..."))
-    local code, response, err = self:jsonRequest("GET", "/api/v1/backups/" .. urlEncode(self.active_backup_id) .. "/uploaded")
+    local completed, code, response, err = self:runSubprocess(function()
+        return self:jsonRequest("GET", "/api/v1/backups/" .. urlEncode(self.active_backup_id) .. "/uploaded")
+    end)
+    if not completed then self:closeProgress(); return self:showMessage(_("Backup cancelled."), 4) end
     if err or code ~= 200 then self:closeProgress(); return self:showMessage(_("Could not resume: ") .. tostring(err or ("HTTP " .. tostring(code))), 7) end
     local uploaded = {}
     for _, entry in ipairs(response.files or {}) do uploaded[entry.backup_path] = tonumber(entry.size) end
@@ -623,8 +680,11 @@ end
 
 function SDRBackup:testConnection()
     self:setProgress(_("Testing connection..."))
-    local code, _, err = self:jsonRequest("GET", "/api/v1/ping")
+    local completed, code, _, err = self:runSubprocess(function()
+        return self:jsonRequest("GET", "/api/v1/ping", nil, 3, 5)
+    end)
     self:closeProgress()
+    if not completed then return self:showMessage(_("Connection test cancelled."), 4) end
     if code == 200 then self:showMessage(_("Connection works."), 4)
     else self:showMessage(_("Connection failed: ") .. tostring(err or ("HTTP " .. tostring(code))), 7) end
 end
@@ -705,10 +765,12 @@ function SDRBackup:addToMainMenu(menu_items)
         {
             text = _("Resume interrupted backup"),
             enabled_func = function() return self.active_backup_id ~= "" and fileExists(ACTIVE_MANIFEST_FILE) end,
-            callback = function() self:resumeBackup() end,
+            callback = function() self:runTask(function() self:resumeBackup() end) end,
         },
         { text = _("Restore from backup"), sub_item_table_func = function() return self:getRestoreMenu() end },
-        { text = _("Test connection"), callback = function() self:testConnection() end },
+        { text = _("Test connection"), callback = function()
+            self:runTask(function() self:testConnection() end)
+        end },
         { text = _("Check for plugin updates"), callback = function() Updater.checkForUpdates() end },
         { text = _("Configure computer"), callback = function() self:showServerConfig() end },
         {

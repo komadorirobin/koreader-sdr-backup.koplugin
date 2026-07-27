@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.1 - 2026-07-27
+
+- Keep KOReader responsive by running storage scans and network operations in cancellable subprocesses.
+- Use a short timeout for connection tests and surface internal errors instead of silently terminating a task.
+- Fix OTA checks and installs so they actually run inside KOReader's coroutine wrapper.
+
 ## 1.1.0 - 2026-07-27
 
 - Back up every `.sdr` directory while preserving storage roots and exact relative paths.

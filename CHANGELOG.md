@@ -1,0 +1,11 @@
+# Changelog
+
+## 1.1.0 - 2026-07-27
+
+- Back up every `.sdr` directory while preserving storage roots and exact relative paths.
+- Back up KOReader history, statistics, collections and relevant state databases.
+- Restore to the same reader or a new device, including replacement memory cards with a new Android UUID.
+- Resume interrupted uploads without resending completed files.
+- Verify completed backups with SHA-256 on the companion server.
+- Add OTA updates from GitHub Releases with mandatory ZIP checksum verification.
+- Add repeatable release tooling for future version tags.

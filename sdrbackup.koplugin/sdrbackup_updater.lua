@@ -6,8 +6,7 @@ local _ = require("gettext")
 
 local GITHUB_OWNER = "komadorirobin"
 local GITHUB_REPO = "koreader-sdr-backup.koplugin"
-local ZIP_ASSET = "sdrbackup.koplugin.zip"
-local CHECKSUM_ASSET = ZIP_ASSET .. ".sha256"
+local UPDATE_FILES = { "main.lua", "sdrbackup_updater.lua", "_meta.lua" }
 local API_URL = string.format(
     "https://api.github.com/repos/%s/%s/releases/latest",
     GITHUB_OWNER,
@@ -52,12 +51,15 @@ local function closeWidget(widget)
     if widget then UIManager:close(widget) end
 end
 
-local function httpRequest(url, sink, accept)
+local function httpRequest(url, sink, accept, block_timeout, total_timeout)
     local http = require("socket/http")
     local socket = require("socket")
     local ok_socketutil, socketutil = pcall(require, "socketutil")
     if ok_socketutil then
-        socketutil:set_timeout(socketutil.LARGE_BLOCK_TIMEOUT, socketutil.LARGE_TOTAL_TIMEOUT)
+        socketutil:set_timeout(
+            block_timeout or socketutil.LARGE_BLOCK_TIMEOUT,
+            total_timeout or socketutil.LARGE_TOTAL_TIMEOUT
+        )
     end
     local ok, first, code, headers, status = pcall(http.request, {
         url = url,
@@ -88,7 +90,19 @@ local function httpGetToFile(url, path)
     local ltn12 = require("ltn12")
     local file, open_err = io.open(path, "wb")
     if not file then return nil, "cannot create file: " .. tostring(open_err) end
-    local ok, err = httpRequest(url, ltn12.sink.file(file), "application/octet-stream")
+    local sink = ltn12.sink.file(file)
+    local ok_socketutil, socketutil = pcall(require, "socketutil")
+    if ok_socketutil then
+        socketutil:set_timeout(socketutil.FILE_BLOCK_TIMEOUT, socketutil.FILE_TOTAL_TIMEOUT)
+        sink = socketutil.file_sink(file)
+    end
+    local ok, err = httpRequest(
+        url,
+        sink,
+        "application/octet-stream",
+        ok_socketutil and socketutil.FILE_BLOCK_TIMEOUT or nil,
+        ok_socketutil and socketutil.FILE_TOTAL_TIMEOUT or nil
+    )
     if not ok then pcall(os.remove, path); return nil, err end
     local lfs = require("libs/libkoreader-lfs")
     local attr = lfs.attributes(path)
@@ -104,12 +118,6 @@ local function cleanNotes(notes)
     return notes ~= "" and notes or nil
 end
 
-local function validAssetUrl(url)
-    if type(url) ~= "string" then return false end
-    local prefix = string.format("https://github.com/%s/%s/releases/download/", GITHUB_OWNER, GITHUB_REPO)
-    return url:sub(1, #prefix) == prefix
-end
-
 local function parseRelease(body)
     local ok_json, json = pcall(require, "json")
     if not ok_json then return nil, "JSON support is unavailable" end
@@ -117,18 +125,10 @@ local function parseRelease(body)
     if not ok or type(data) ~= "table" or type(data.tag_name) ~= "string" then
         return nil, "invalid GitHub release response"
     end
-    local zip_url, checksum_url
-    for asset_index, asset in ipairs(data.assets or {}) do
-        if asset.name == ZIP_ASSET and validAssetUrl(asset.browser_download_url) then
-            zip_url = asset.browser_download_url
-        elseif asset.name == CHECKSUM_ASSET and validAssetUrl(asset.browser_download_url) then
-            checksum_url = asset.browser_download_url
-        end
-    end
+    local version = data.tag_name:match("^v?(%d+%.%d+%.%d+)$")
+    if not version then return nil, "invalid release version" end
     return {
-        version = data.tag_name:match("^v?(.*)$"),
-        zip_url = zip_url,
-        checksum_url = checksum_url,
+        version = version,
         notes = cleanNotes(data.body),
     }
 end
@@ -139,12 +139,12 @@ local function fetchLatestRelease()
     return parseRelease(body)
 end
 
-local function temporaryPaths()
+local function temporaryDir()
     local base
     local ok, datastorage = pcall(require, "datastorage")
     if ok and datastorage then base = datastorage:getSettingsDir() end
     base = base or "/tmp"
-    return base .. "/sdrbackup_update.zip", base .. "/sdrbackup_update.zip.sha256"
+    return base .. "/sdrbackup-update"
 end
 
 local function sha256File(path)
@@ -161,53 +161,83 @@ local function sha256File(path)
     return feed()
 end
 
-local function verifyDownload(zip_path, checksum_path)
-    local checksum, read_err = io.open(checksum_path, "rb")
-    if not checksum then return nil, read_err end
-    local expected = checksum:read("*a"):match("^%s*([0-9a-fA-F]+)")
-    checksum:close()
-    if not expected or #expected ~= 64 then return nil, "invalid SHA-256 file" end
-    local actual, hash_err = sha256File(zip_path)
-    if not actual then return nil, hash_err end
-    if actual:lower() ~= expected:lower() then return nil, "SHA-256 mismatch" end
-    return true
-end
-
-local function shellSuccess(result)
-    return result == true or result == 0
-end
-
-local function installArchive(zip_path, version)
-    local tested = os.execute(string.format("unzip -tq %q >/dev/null 2>&1", zip_path))
-    if not shellSuccess(tested) then return nil, "ZIP integrity test failed" end
-    local parent = PLUGIN_DIR:match("^(.+)/[^/]+$") or PLUGIN_DIR
-    local extracted = os.execute(string.format("unzip -o -q %q -d %q", zip_path, parent))
-    if not shellSuccess(extracted) then return nil, "unzip failed" end
-    local ok, meta = pcall(dofile, PLUGIN_DIR .. "/_meta.lua")
-    if not ok or type(meta) ~= "table" or tostring(meta.version) ~= tostring(version) then
-        return nil, "installed plugin version does not match release"
+local function parseChecksums(path)
+    local file, err = io.open(path, "rb")
+    if not file then return nil, err end
+    local checksums = {}
+    for line in file:lines() do
+        local hash, name = line:match("^([0-9a-fA-F]+)%s+[* ]?([^/]+)$")
+        if hash and #hash == 64 and name then checksums[name] = hash:lower() end
     end
+    file:close()
+    for file_index, name in ipairs(UPDATE_FILES) do
+        if not checksums[name] then return nil, "missing checksum for " .. name end
+    end
+    return checksums
+end
+
+local function atomicCopy(source, target)
+    local input, input_err = io.open(source, "rb")
+    if not input then return nil, input_err end
+    local temporary = target .. ".sdrbackup-update"
+    local output, output_err = io.open(temporary, "wb")
+    if not output then input:close(); return nil, output_err end
+    while true do
+        local chunk = input:read(128 * 1024)
+        if not chunk then break end
+        local wrote, write_err = output:write(chunk)
+        if not wrote then
+            input:close(); output:close(); pcall(os.remove, temporary)
+            return nil, write_err
+        end
+    end
+    input:close()
+    output:close()
+    local renamed, rename_err = os.rename(temporary, target)
+    if not renamed then pcall(os.remove, temporary); return nil, rename_err end
     return true
 end
 
 local function installUpdate(release)
-    local zip_path, checksum_path = temporaryPaths()
+    local temp_dir = temporaryDir()
     local progress = toast(string.format(_("Downloading SDR Backup %s..."), release.version), 180)
     local ok_trapper, Trapper = pcall(require, "ui/trapper")
 
     local function doInstall()
-        local ok, err = httpGetToFile(release.zip_url, zip_path)
-        if not ok then return { success = false, stage = "download", err = err } end
-        ok, err = httpGetToFile(release.checksum_url, checksum_path)
-        if not ok then pcall(os.remove, zip_path); return { success = false, stage = "checksum download", err = err } end
-        ok, err = verifyDownload(zip_path, checksum_path)
-        if not ok then
-            pcall(os.remove, zip_path); pcall(os.remove, checksum_path)
-            return { success = false, stage = "verification", err = err }
+        local lfs = require("libs/libkoreader-lfs")
+        lfs.mkdir(temp_dir)
+        local raw_base = string.format(
+            "https://raw.githubusercontent.com/%s/%s/v%s/sdrbackup.koplugin/",
+            GITHUB_OWNER,
+            GITHUB_REPO,
+            release.version
+        )
+        local checksum_path = temp_dir .. "/files.sha256"
+        local ok, err = httpGetToFile(raw_base .. "files.sha256", checksum_path)
+        if not ok then return { success = false, stage = "checksum download", err = err } end
+        local checksums
+        checksums, err = parseChecksums(checksum_path)
+        if not checksums then return { success = false, stage = "checksum parsing", err = err } end
+
+        for file_index, name in ipairs(UPDATE_FILES) do
+            local path = temp_dir .. "/" .. name
+            ok, err = httpGetToFile(raw_base .. name, path)
+            if not ok then return { success = false, stage = "download " .. name, err = err } end
+            local actual
+            actual, err = sha256File(path)
+            if not actual or actual:lower() ~= checksums[name] then
+                return { success = false, stage = "verification " .. name, err = err or "SHA-256 mismatch" }
+            end
         end
-        ok, err = installArchive(zip_path, release.version)
-        pcall(os.remove, zip_path); pcall(os.remove, checksum_path)
-        if not ok then return { success = false, stage = "installation", err = err } end
+
+        for file_index, name in ipairs(UPDATE_FILES) do
+            ok, err = atomicCopy(temp_dir .. "/" .. name, PLUGIN_DIR .. "/" .. name)
+            if not ok then return { success = false, stage = "installation " .. name, err = err } end
+        end
+        local meta_ok, meta = pcall(dofile, PLUGIN_DIR .. "/_meta.lua")
+        if not meta_ok or type(meta) ~= "table" or tostring(meta.version) ~= release.version then
+            return { success = false, stage = "installation", err = "installed version mismatch" }
+        end
         return { success = true }
     end
 
@@ -234,7 +264,6 @@ local function installUpdate(release)
                 handleResult(result)
             elseif completed == false then
                 closeWidget(progress)
-                pcall(os.remove, zip_path); pcall(os.remove, checksum_path)
                 toast(_("Update cancelled."))
             end
         end)
@@ -249,9 +278,6 @@ local function showRelease(release, current)
     end
     local text = string.format(_("SDR Backup %s is available. You have %s."), release.version, current)
     if release.notes then text = text .. "\n\n" .. _("What's new:") .. "\n" .. release.notes end
-    if not release.zip_url or not release.checksum_url then
-        return toast(text .. "\n\n" .. _("The release is missing its ZIP or SHA-256 file."), 9)
-    end
     UIManager:show(ConfirmBox:new{
         text = text .. "\n\n" .. _("Download, verify and install now?"),
         ok_text = _("Install update"),

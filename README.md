@@ -49,6 +49,6 @@ Behåll alltid datorbackupen tills du har öppnat flera böcker och verifierat l
 
 ## OTA-uppdateringar
 
-Välj **SDR Backup > Sök efter pluginuppdateringar**. Pluginet hämtar metadata från den senaste GitHub-releasen och installerar bara uppdateringen när både `sdrbackup.koplugin.zip` och dess `.sha256`-fil finns och kontrollsumman stämmer. ZIP-filen integritetstestas innan den packas upp. KOReader erbjuder sedan omstart.
+Välj **SDR Backup > Sök efter pluginuppdateringar**. Pluginet hämtar metadata från den senaste GitHub-releasen och laddar därefter ner de tre små pluginfilerna direkt från den taggade källkoden. Varje fil verifieras mot `files.sha256` och installeras atomiskt, utan release-redirect eller beroende av `unzip`. KOReader erbjuder sedan omstart.
 
 Framtida releaser publiceras med `./scripts/publish_release.sh vX.Y.Z`. Skriptet kontrollerar att versionsnumren stämmer, kör testerna, bygger ZIP och checksumma, skapar Git-taggen och publicerar båda releasefilerna.

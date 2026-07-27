@@ -1,4 +1,5 @@
 import re
+import hashlib
 import unittest
 from pathlib import Path
 
@@ -7,6 +8,16 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 
 
 class PluginSourceTests(unittest.TestCase):
+    def test_update_checksums_match_plugin_files(self):
+        plugin_dir = PROJECT_DIR / "sdrbackup.koplugin"
+        checksums = {}
+        for line in (plugin_dir / "files.sha256").read_text().splitlines():
+            digest, name = line.split(maxsplit=1)
+            checksums[name.lstrip("* ")] = digest
+        for name in ("main.lua", "sdrbackup_updater.lua", "_meta.lua"):
+            actual = hashlib.sha256((plugin_dir / name).read_bytes()).hexdigest()
+            self.assertEqual(checksums.get(name), actual)
+
     def test_gettext_identifier_is_not_shadowed(self):
         offenders = []
         for path in (PROJECT_DIR / "sdrbackup.koplugin").glob("*.lua"):

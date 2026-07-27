@@ -5,6 +5,13 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$PROJECT_DIR/dist"
 ZIP_PATH="$DIST_DIR/sdrbackup.koplugin.zip"
 CHECKSUM_PATH="$ZIP_PATH.sha256"
+PLUGIN_DIR="$PROJECT_DIR/sdrbackup.koplugin"
+
+if command -v sha256sum >/dev/null 2>&1; then
+    (cd "$PLUGIN_DIR" && sha256sum main.lua sdrbackup_updater.lua _meta.lua > files.sha256)
+else
+    (cd "$PLUGIN_DIR" && shasum -a 256 main.lua sdrbackup_updater.lua _meta.lua > files.sha256)
+fi
 
 mkdir -p "$DIST_DIR"
 find "$DIST_DIR" -maxdepth 1 -type f \( -name 'sdrbackup.koplugin.zip' -o -name 'sdrbackup.koplugin.zip.sha256' \) -delete

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.3 - 2026-07-27
+
+- Download OTA source files directly from the tagged GitHub tree, avoiding release-asset redirects.
+- Remove the Android `unzip` dependency from OTA installation.
+- Verify every downloaded plugin file against a committed SHA-256 manifest.
+- Enforce KOReader's file-download timeout so an update cannot wait indefinitely.
+
 ## 1.1.2 - 2026-07-27
 
 - Fix the connection result handler accidentally shadowing KOReader's gettext function.

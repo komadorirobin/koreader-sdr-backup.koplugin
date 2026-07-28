@@ -1,4 +1,5 @@
 local ConfirmBox = require("ui/widget/confirmbox")
+local Device = require("device")
 local InfoMessage = require("ui/widget/infomessage")
 local InputDialog = require("ui/widget/inputdialog")
 local Trapper = require("ui/trapper")
@@ -25,7 +26,7 @@ local PENDING_RESTORE_FILE = KOREADER_DIR .. "/sdrbackup_pending_restore.json"
 local RESTORE_STAGE_DIR = KOREADER_DIR .. "/.sdrbackup-restore"
 local PROGRESS_INTERVAL = 10
 local SCAN_YIELD_INTERVAL = 250
-local VERSION = "1.1.5"
+local VERSION = "1.1.6"
 
 local function trim(value)
     return tostring(value or ""):match("^%s*(.-)%s*$")
@@ -310,16 +311,37 @@ end
 
 function SDRBackup:discoverRoots()
     local roots = {}
+    local seen = {}
     if directoryExists(INTERNAL_ROOT) then
         roots[#roots + 1] = { id = "internal", kind = "internal", label = "Intern lagring", path = INTERNAL_ROOT }
+        seen[INTERNAL_ROOT] = true
     end
-    if directoryExists("/storage") then
-        for name in lfs.dir("/storage") do
+
+    local function addRemovable(path, label)
+        if type(path) ~= "string" then return end
+        path = path:gsub("/+$", "")
+        if path == "" or path == "/sdcard" or path == "/storage/self/primary" then return end
+        if not seen[path] and directoryExists(path) then
+            roots[#roots + 1] = {
+                id = "removable-" .. label,
+                kind = "removable",
+                label = label,
+                path = path,
+            }
+            seen[path] = true
+        end
+    end
+
+    local external_ok, external_path = pcall(function() return Device:hasExternalSD() end)
+    if external_ok and type(external_path) == "string" then
+        addRemovable(external_path, external_path:match("([^/]+)$") or "external")
+    end
+
+    local storage_ok, iterator, state = pcall(lfs.dir, "/storage")
+    if storage_ok and iterator then
+        for name in iterator, state do
             if name ~= "." and name ~= ".." and name ~= "emulated" and name ~= "self" then
-                local path = "/storage/" .. name
-                if directoryExists(path) then
-                    roots[#roots + 1] = { id = "removable-" .. name, kind = "removable", label = name, path = path }
-                end
+                addRemovable("/storage/" .. name, name)
             end
         end
     end

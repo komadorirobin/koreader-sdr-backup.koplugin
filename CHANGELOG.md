@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.6 - 2026-07-28
+
+- Use KOReader's Android external-SD API before trying generic storage discovery.
+- Treat `/storage` enumeration as an optional, protected fallback for Android 14 scoped storage.
+- Continue scanning `/storage/emulated/0` when listing its parent is denied.
+
 ## 1.1.5 - 2026-07-28
 
 - Build the storage manifest cooperatively in KOReader's main process instead of serializing it from a subprocess.

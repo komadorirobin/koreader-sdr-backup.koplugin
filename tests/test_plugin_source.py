@@ -8,6 +8,12 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 
 
 class PluginSourceTests(unittest.TestCase):
+    def test_storage_root_enumeration_is_permission_safe(self):
+        main = (PROJECT_DIR / "sdrbackup.koplugin" / "main.lua").read_text()
+        self.assertNotIn('for name in lfs.dir("/storage")', main)
+        self.assertIn('pcall(lfs.dir, "/storage")', main)
+        self.assertIn("Device:hasExternalSD()", main)
+
     def test_manifest_scan_does_not_return_through_subprocess(self):
         main = (PROJECT_DIR / "sdrbackup.koplugin" / "main.lua").read_text()
         self.assertNotIn("runSubprocess(function() return self:createManifest()", main)

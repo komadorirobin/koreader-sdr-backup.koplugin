@@ -24,7 +24,8 @@ local ACTIVE_MANIFEST_FILE = KOREADER_DIR .. "/sdrbackup_active_manifest.json"
 local PENDING_RESTORE_FILE = KOREADER_DIR .. "/sdrbackup_pending_restore.json"
 local RESTORE_STAGE_DIR = KOREADER_DIR .. "/.sdrbackup-restore"
 local PROGRESS_INTERVAL = 10
-local VERSION = "1.1.4"
+local SCAN_YIELD_INTERVAL = 250
+local VERSION = "1.1.5"
 
 local function trim(value)
     return tostring(value or ""):match("^%s*(.-)%s*$")
@@ -342,20 +343,33 @@ function SDRBackup:addFile(manifest, root, absolute_path, relative_path, categor
     }
 end
 
+function SDRBackup:scanPulse()
+    self.scan_steps = (self.scan_steps or 0) + 1
+    if self.scan_steps % SCAN_YIELD_INTERVAL ~= 0 or not Trapper:isWrapped() then return true end
+    local manifest = self.scan_manifest or { sdr_directories = {}, files = {} }
+    return Trapper:info(string.format(
+        _("Scanning storage...\n%d .sdr folders, %d files found"),
+        #manifest.sdr_directories,
+        #manifest.files
+    ))
+end
+
 function SDRBackup:walkFiles(directory, callback)
     local ok, iterator, state = pcall(lfs.dir, directory)
-    if not ok or not iterator then return end
+    if not ok or not iterator then return true end
     for name in iterator, state do
         if name ~= "." and name ~= ".." then
+            if not self:scanPulse() then return false end
             local path = joinPath(directory, name)
             local attr = lfs.attributes(path)
             if attr and attr.mode == "directory" then
-                self:walkFiles(path, callback)
+                if not self:walkFiles(path, callback) then return false end
             elseif attr and attr.mode == "file" then
                 callback(path, attr)
             end
         end
     end
+    return true
 end
 
 function SDRBackup:scanSdrDirectories(manifest, root)
@@ -363,10 +377,11 @@ function SDRBackup:scanSdrDirectories(manifest, root)
         local ok, iterator, state = pcall(lfs.dir, directory)
         if not ok or not iterator then
             manifest.scan_warnings[#manifest.scan_warnings + 1] = directory .. ": " .. tostring(iterator)
-            return
+            return true
         end
         for name in iterator, state do
             if name ~= "." and name ~= ".." then
+                if not self:scanPulse() then return false end
                 local absolute = joinPath(directory, name)
                 local child_relative = relative == "" and name or relative .. "/" .. name
                 local attr = lfs.attributes(absolute)
@@ -377,25 +392,27 @@ function SDRBackup:scanSdrDirectories(manifest, root)
                             relative_path = child_relative,
                             original_absolute_path = absolute,
                         }
-                        self:walkFiles(absolute, function(file_path)
+                        local continued = self:walkFiles(absolute, function(file_path)
                             local file_relative = child_relative .. file_path:sub(#absolute + 1)
                             file_relative = file_relative:gsub("^/", "")
                             self:addFile(manifest, root, file_path, file_relative, "sdr")
                         end)
+                        if not continued then return false end
                     elseif child_relative ~= "Android/data" and child_relative ~= "Android/obb" then
-                        visit(absolute, child_relative)
+                        if not visit(absolute, child_relative) then return false end
                     end
                 end
             end
         end
+        return true
     end
-    visit(root.path, "")
+    return visit(root.path, "")
 end
 
 function SDRBackup:scanGlobalState(manifest, internal_root)
     local settings_dir = KOREADER_DIR .. "/settings"
     if directoryExists(settings_dir) then
-        self:walkFiles(settings_dir, function(path)
+        local continued = self:walkFiles(settings_dir, function(path)
             local relative = path:sub(#INTERNAL_ROOT + 2)
             local name = path:match("([^/]+)$") or ""
             local lower = name:lower()
@@ -407,10 +424,12 @@ function SDRBackup:scanGlobalState(manifest, internal_root)
                 self:addFile(manifest, internal_root, path, relative, "global")
             end
         end)
+        if not continued then return false end
     end
     local ok, iterator, state = pcall(lfs.dir, KOREADER_DIR)
     if ok and iterator then
         for name in iterator, state do
+            if not self:scanPulse() then return false end
             local path = joinPath(KOREADER_DIR, name)
             if fileExists(path) and (
                 name == "settings.reader.lua"
@@ -421,6 +440,7 @@ function SDRBackup:scanGlobalState(manifest, internal_root)
             end
         end
     end
+    return true
 end
 
 function SDRBackup:createManifest()
@@ -434,19 +454,28 @@ function SDRBackup:createManifest()
         files = {},
         scan_warnings = {},
     }
+    self.scan_steps = 0
+    self.scan_manifest = manifest
     local internal
     for root_index, root in ipairs(roots) do
         manifest.roots[#manifest.roots + 1] = {
             id = root.id, kind = root.kind, label = root.label, original_path = root.path,
         }
         if root.kind == "internal" then internal = root end
-        self:scanSdrDirectories(manifest, root)
+        if not self:scanSdrDirectories(manifest, root) then
+            self.scan_manifest = nil
+            return nil, _("Backup cancelled.")
+        end
     end
-    if internal then self:scanGlobalState(manifest, internal) end
+    if internal and not self:scanGlobalState(manifest, internal) then
+        self.scan_manifest = nil
+        return nil, _("Backup cancelled.")
+    end
     table.sort(manifest.files, function(a, b) return a.backup_path < b.backup_path end)
     table.sort(manifest.sdr_directories, function(a, b)
         return (a.root_id .. "/" .. a.relative_path) < (b.root_id .. "/" .. b.relative_path)
     end)
+    self.scan_manifest = nil
     return manifest
 end
 
@@ -508,10 +537,10 @@ end
 
 function SDRBackup:startNewBackupNow()
     self:setProgress(_("Scanning all storage for .sdr folders..."))
-    local completed, manifest = self:runSubprocess(function() return self:createManifest() end)
-    if not completed then
+    local manifest, scan_err = self:createManifest()
+    if not manifest then
         self:closeProgress()
-        return self:showMessage(_("Backup cancelled."), 4)
+        return self:showMessage(scan_err or _("Backup cancelled."), 4)
     end
     if #manifest.scan_warnings > 0 then
         self:closeProgress()
@@ -526,7 +555,7 @@ function SDRBackup:startNewBackupNow()
     local saved, save_err = self:saveActiveManifest(manifest)
     if not saved then self:closeProgress(); return self:showMessage(_("Could not save manifest: ") .. tostring(save_err), 7) end
     self:setProgress(string.format(_("Found %d .sdr folders and %d files. Contacting the computer..."), #manifest.sdr_directories, #manifest.files))
-    completed, code, response, err = self:runSubprocess(function()
+    local completed, code, response, err = self:runSubprocess(function()
         return self:jsonRequest("POST", "/api/v1/backups", manifest)
     end)
     if not completed then

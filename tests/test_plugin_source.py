@@ -8,6 +8,11 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 
 
 class PluginSourceTests(unittest.TestCase):
+    def test_manifest_scan_does_not_return_through_subprocess(self):
+        main = (PROJECT_DIR / "sdrbackup.koplugin" / "main.lua").read_text()
+        self.assertNotIn("runSubprocess(function() return self:createManifest()", main)
+        self.assertIn("local manifest, scan_err = self:createManifest()", main)
+
     def test_ota_install_does_not_run_in_subprocess(self):
         updater = (PROJECT_DIR / "sdrbackup.koplugin" / "sdrbackup_updater.lua").read_text()
         install_section = updater.split("local function installUpdate", 1)[1].split(

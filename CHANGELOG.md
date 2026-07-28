@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.5 - 2026-07-28
+
+- Build the storage manifest cooperatively in KOReader's main process instead of serializing it from a subprocess.
+- Yield to the UI every 250 scanned entries and allow the scan to be cancelled normally.
+- Guard against a missing manifest before the backup workflow accesses it.
+
 ## 1.1.4 - 2026-07-27
 
 - Run OTA file download, verification and installation in KOReader's main process.
